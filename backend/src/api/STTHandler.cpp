@@ -1,4 +1,5 @@
 #include "STTHandler.hpp"
+#include "NoiseSuppressor.hpp"
 
 #include <algorithm>
 #include <format>
@@ -61,6 +62,8 @@ namespace CAM::API {
             return std::string{};
         }
 
+        const std::vector<float> denoised_samples = NoiseSuppressor::process(pcm_samples);
+
         std::lock_guard<std::mutex> lock(mutex_);
 
         whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
@@ -90,8 +93,8 @@ namespace CAM::API {
         const int ret = whisper_full(
             context_.get(),
             wparams,
-            pcm_samples.data(),
-            static_cast<int>(pcm_samples.size()));
+            denoised_samples.data(),
+            static_cast<int>(denoised_samples.size()));
 
         if (ret != 0) {
             return std::unexpected(std::format("whisper_full failed with code {}", ret));

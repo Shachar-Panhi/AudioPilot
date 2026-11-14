@@ -129,7 +129,7 @@ add_executable(backend "src/main.cpp" "src/api/Listener.cpp" "src/api/WebsocketS
 "src/api/HttpRouter.cpp"
 "src/api/PeerConnection.cpp" "src/api/PeerConnectionManager.cpp" "src/ThirdParty/RtpCpp/SmallVector.cpp"
 "src/api/Bridge.cpp" "src/api/BridgeManager.cpp"
-"src/api/OpusTranscoder.cpp" "src/api/PTTHandler.cpp" "src/api/STTHandler.cpp")
+"src/api/OpusTranscoder.cpp" "src/api/PTTHandler.cpp" "src/api/STTHandler.cpp" "src/api/NoiseSuppressor.cpp")
 
 target_compile_definitions(backend PRIVATE
     WHISPER_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-tiny.en-q8_0.bin"
