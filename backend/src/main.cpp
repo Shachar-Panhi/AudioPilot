@@ -9,8 +9,14 @@
 int main() {
     constexpr auto kWhisperModelPath = WHISPER_MODEL_PATH;
     constexpr auto kWhisperVadModelPath = WHISPER_VAD_MODEL_PATH;
+    constexpr bool kUseGpu = true;
 
-    auto stt_result = CAM::API::STTHandler::create(kWhisperModelPath, kWhisperVadModelPath);
+    // the browser already applies noise suppression to the mic track,
+    // and running a second spectral suppressor on top measurably cost Whisper words in testing.
+    constexpr bool kEnableServerNoiseSuppression = false;
+
+    auto stt_result = CAM::API::STTHandler::create(kWhisperModelPath, kWhisperVadModelPath,
+                                                   kUseGpu, kEnableServerNoiseSuppression);
     if (!stt_result) {
         spdlog::error("Startup failed: {}", stt_result.error());
         return 1;
@@ -20,9 +26,8 @@ int main() {
 
     auto ws_manager = std::make_shared<CAM::API::WebsocketManager>();
     auto pc_manager = std::make_shared<CAM::API::PeerConnectionManager>();
-    auto bridge_manager = std::make_shared<CAM::API::BridgeManager>(std::move(*stt_result));
 
-    CAM::API::Coordinator coordinator(ws_manager, pc_manager, bridge_manager);
+    CAM::API::Coordinator coordinator(io_context.get_executor(), ws_manager, pc_manager, std::move(*stt_result));
     auto ws_callback = coordinator.process_ws_callback();
     auto api_callback = coordinator.process_http_callback();
 

@@ -21,9 +21,10 @@ namespace CAM::API {
     
     class Coordinator {
     public:
-        explicit Coordinator(std::shared_ptr<WebsocketManager> ws_manager, 
-            std::shared_ptr<PeerConnectionManager> pc_manager, 
-            std::shared_ptr<BridgeManager> bridge_manager);
+        Coordinator(boost::asio::any_io_executor executor,
+            std::shared_ptr<WebsocketManager> ws_manager,
+            std::shared_ptr<PeerConnectionManager> pc_manager,
+            std::shared_ptr<STTHandler> stt_handler);
         
         WsCallback process_ws_callback(); 
         ApiCallback process_http_callback();  
@@ -31,6 +32,10 @@ namespace CAM::API {
         void disconnect_session(const std::string& session_id);
 
     private:
+        static PTTHandler::TranscriptCallback make_transcript_callback(boost::asio::any_io_executor executor,
+                                                                       std::shared_ptr<WebsocketManager> ws_manager);
+
+        boost::asio::any_io_executor executor_;
         std::shared_ptr<WebsocketManager> ws_manager_;    
         std::shared_ptr<PeerConnectionManager> pc_manager_;    
         std::shared_ptr<BridgeManager> bridge_manager_;
