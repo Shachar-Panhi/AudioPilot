@@ -20,8 +20,19 @@ namespace CAM::API {
         using ContextHandle = std::unique_ptr<whisper_context, decltype(&whisper_free)>;
         using TranscribeCallback = std::function<void(std::expected<std::string, std::string>)>;
 
+        // whisper reads the prompt as the transcript of audio that came just before, not as instructions,
+        // so it copies the prompt's spelling, casing, punctuation and number style. rules for editing it:
+        //   - use one spelling per command, in the exact form it should come out (sentence case, digits,
+        //     explicit +/- signs). mixed spellings of the same command dilute the bias
+        //   - spread example numbers across each command's range
+        //   - keep the lead-in sentence. the prompt's first word tokenizes differently ("Reset" -> [Res][et]) from how
+        //     whisper writes words ([ Reset], with a leading space), so a command placed first would bias nothing
+        //   - only the last 224 tokens are used (this is ~60)
         static constexpr const char* kInitialPrompt =
-            "Commands: reset, Reset. Mixing 15, mixing 80. AGC 0, AGC 10. Pitch-shift 0, Pitch-Shift -6, Pitch shift +3";
+            "Audio console voice commands. Reset. "
+            "Mixing 0. Mixing 15. Mixing 50. Mixing 80. Mixing 100. "
+            "AGC 0. AGC 5. AGC 10. "
+            "Pitch 0. Pitch +3. Pitch -6. Pitch +12. Pitch -12.";
 
         // voice commands are a handful of words. capping the output bounds latency if the model starts looping
         static constexpr int kMaxTokens = 32;
