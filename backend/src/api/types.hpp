@@ -33,6 +33,13 @@ namespace CAM::API {
         bool active = false; //NOLINT
     };
 
+    // sent to the client that pressed PTT once its audio has been transcribed
+    struct SttResultPacket {
+        std::string type = "stt_result"; //NOLINT
+        std::string status; //NOLINT  "success" or "error"
+        std::string text; //NOLINT    transcript on success, error message otherwise
+    };
+
     struct ApiResponsePacket {
         std::string type = "api_response"; //NOLINT
         std::string action; //NOLINT

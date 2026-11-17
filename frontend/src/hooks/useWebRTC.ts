@@ -5,9 +5,14 @@ import {
   SdpPacketSchema, 
   IcePacketSchema, 
   ApiResponsePacketSchema,
+  SttResultPacketSchema,
   type LogMessage, 
   type MessageType 
 } from '../types';
+
+// the end of a command is still in the browser's capture/encode pipeline and on the network when the key
+// is released. keep the server recording a little longer so the last word isn't cut off.
+const PTT_RELEASE_TAIL_MS = 250;
 
 export const useWebRTC = (wsUrl: string, apiUrl: string) => {
   const [messages, setMessages] = useState<LogMessage[]>([]);
@@ -27,6 +32,7 @@ export const useWebRTC = (wsUrl: string, apiUrl: string) => {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const pttActiveRef = useRef<boolean>(false);
   const isInCallRef = useRef<boolean>(false);
+  const pttStopTimerRef = useRef<number | null>(null);
 
   const appendLog = useCallback((text: string, type: MessageType) => {
     if (!isMountedRef.current) return;
@@ -50,6 +56,10 @@ export const useWebRTC = (wsUrl: string, apiUrl: string) => {
     }
     micPromiseRef.current = null;
     iceCandidateQueueRef.current = [];
+    if (pttStopTimerRef.current !== null) {
+      window.clearTimeout(pttStopTimerRef.current);
+      pttStopTimerRef.current = null;
+    }
     pttActiveRef.current = false;
     if (isMountedRef.current) {
       setIsInCall(false);
@@ -58,13 +68,10 @@ export const useWebRTC = (wsUrl: string, apiUrl: string) => {
     }
   }, []);
 
-  const setPtt = useCallback(async (active: boolean) => {
-    if (!sessionIdRef.current || !isInCallRef.current || pttActiveRef.current === active) {
+  const sendPtt = useCallback(async (active: boolean) => {
+    if (!sessionIdRef.current || !isInCallRef.current) {
       return;
     }
-
-    pttActiveRef.current = active;
-    setIsPttActive(active);
 
     try {
       await axios.post(`${apiUrl}/api/ptt`, {
@@ -87,6 +94,31 @@ export const useWebRTC = (wsUrl: string, apiUrl: string) => {
       }
     }
   }, [apiUrl, appendLog]);
+
+  const setPtt = useCallback((active: boolean) => {
+    if (!sessionIdRef.current || !isInCallRef.current || pttActiveRef.current === active) {
+      return;
+    }
+
+    pttActiveRef.current = active;
+    setIsPttActive(active);
+
+    if (active) {
+      // pressed again while the previous release is still in its tail: the server is still recording, so just carry on
+      if (pttStopTimerRef.current !== null) {
+        window.clearTimeout(pttStopTimerRef.current);
+        pttStopTimerRef.current = null;
+        return;
+      }
+      void sendPtt(true);
+      return;
+    }
+
+    pttStopTimerRef.current = window.setTimeout(() => {
+      pttStopTimerRef.current = null;
+      void sendPtt(false);
+    }, PTT_RELEASE_TAIL_MS);
+  }, [sendPtt]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -218,6 +250,17 @@ export const useWebRTC = (wsUrl: string, apiUrl: string) => {
     ws.onmessage = async (event) => {
       try {
         const rawPacket = JSON.parse(event.data);
+
+        const sttParsed = SttResultPacketSchema.safeParse(rawPacket);
+        if (sttParsed.success) {
+          const { status, text } = sttParsed.data;
+          if (status === 'error') {
+            appendLog(`Voice command failed: ${text}`, 'system');
+          } else {
+            appendLog(text ? `Voice command: "${text}"` : 'Voice command: no speech detected.', 'received');
+          }
+          return;
+        }
 
         const apiParsed = ApiResponsePacketSchema.safeParse(rawPacket);
         if (apiParsed.success && apiParsed.data.type === 'api_response') {
