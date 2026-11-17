@@ -8,9 +8,10 @@ namespace CAM::API {
     namespace {
         std::unique_ptr<PTTHandler> init_ptt_handler(
             const std::string& session_id,
-            const std::shared_ptr<STTHandler>& stt_handler)
+            const std::shared_ptr<STTHandler>& stt_handler,
+            const PTTHandler::TranscriptCallback& on_transcript)
         {
-            auto ptt = PTTHandler::create(session_id, stt_handler);
+            auto ptt = PTTHandler::create(session_id, stt_handler, on_transcript);
             if (!ptt) {
                 spdlog::error("Failed to create PTTHandler for session {}: {}", session_id, ptt.error());
                 return nullptr;
@@ -23,13 +24,14 @@ namespace CAM::API {
                    std::weak_ptr<PeerConnection> peer2,
                    std::string session1_id,
                    std::string session2_id,
-                   const std::shared_ptr<STTHandler>& stt_handler)
+                   const std::shared_ptr<STTHandler>& stt_handler,
+                   const PTTHandler::TranscriptCallback& on_transcript)
         : peer1_(std::move(peer1)),
           peer2_(std::move(peer2)),
           session1_id_(std::move(session1_id)),
           session2_id_(std::move(session2_id)),
-          ptt_handler1_(init_ptt_handler(session1_id_, stt_handler)),
-          ptt_handler2_(init_ptt_handler(session2_id_, stt_handler)) {}
+          ptt_handler1_(init_ptt_handler(session1_id_, stt_handler, on_transcript)),
+          ptt_handler2_(init_ptt_handler(session2_id_, stt_handler, on_transcript)) {}
 
     bool Bridge::contains(const std::string& session_id) const {
         return session1_id_ == session_id || session2_id_ == session_id;
