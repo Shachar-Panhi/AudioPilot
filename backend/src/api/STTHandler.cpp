@@ -1,7 +1,7 @@
 #include "STTHandler.hpp"
-#include "NoiseSuppressor.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <spdlog/spdlog.h>
 #include <thread>
@@ -9,9 +9,11 @@
 
 namespace CAM::API {
 
-    STTHandler::STTHandler(ContextHandle context, std::string vad_model_path) noexcept
+    STTHandler::STTHandler(ContextHandle context, std::string vad_model_path, std::optional<NoiseSuppressor> noise_suppressor) noexcept
         : context_(std::move(context)),
-          vad_model_path_(std::move(vad_model_path)) {}
+          vad_model_path_(std::move(vad_model_path)),
+          noise_suppressor_(std::move(noise_suppressor)),
+          n_threads_(std::clamp(static_cast<int>(std::thread::hardware_concurrency()) / 2, 1, 4)) {}
 
     STTHandler::~STTHandler() {
         worker_pool_.join();
@@ -20,7 +22,8 @@ namespace CAM::API {
     std::expected<std::shared_ptr<STTHandler>, std::string>
     STTHandler::create(const std::filesystem::path& model_path,
                        const std::filesystem::path& vad_model_path,
-                       bool use_gpu) {
+                       bool use_gpu,
+                       bool enable_noise_suppression) {
         if (!std::filesystem::exists(model_path)) {
             return std::unexpected(
                 std::format("Whisper model file not found: {}", model_path.string()));
@@ -42,59 +45,55 @@ namespace CAM::API {
                 std::format("Failed to initialize Whisper context from: {}", path_str));
         }
 
+        std::optional<NoiseSuppressor> noise_suppressor;
+        if (enable_noise_suppression) {
+            auto created = NoiseSuppressor::create();
+            if (!created) {
+                return std::unexpected(created.error());
+            }
+            noise_suppressor = std::move(*created);
+        }
+
         std::string valid_vad_path;
         if (!vad_model_path.empty() && std::filesystem::exists(vad_model_path)) {
             valid_vad_path = vad_model_path.string();
             spdlog::info("Whisper VAD model enabled: {}", valid_vad_path);
         }
 
-        spdlog::info("Whisper STT initialized ({}). System optimizations: {}",
+        spdlog::info("Whisper STT initialized ({}, server noise suppression {}). System optimizations: {}",
                      model_path.filename().string(),
+                     noise_suppressor ? "on" : "off",
                      whisper_print_system_info());
 
         return std::shared_ptr<STTHandler>(
-            new STTHandler(std::move(ctx), std::move(valid_vad_path)));
+            new STTHandler(std::move(ctx), std::move(valid_vad_path), std::move(noise_suppressor)));
     }
 
     std::expected<std::string, std::string>
-    STTHandler::transcribe(std::span<const float> pcm_samples) {
+    STTHandler::transcribe(std::vector<float> pcm_samples) {
         if (pcm_samples.empty()) {
             return std::string{};
         }
 
-        const std::vector<float> denoised_samples = NoiseSuppressor::process(pcm_samples);
-
         std::lock_guard<std::mutex> lock(mutex_);
 
-        whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-        const int max_threads = static_cast<int>(std::thread::hardware_concurrency());
-        wparams.n_threads = std::max(1, std::min(4, max_threads > 0 ? max_threads / 2 : 1));
-        wparams.language = "en";
-        wparams.translate = false;
-        wparams.no_context = true;
-        wparams.single_segment = true;
-        wparams.suppress_blank = true;
-        wparams.suppress_nst = true;
-        wparams.no_speech_thold = 0.6F; //NOLINT
-        wparams.print_progress = false;
-        wparams.print_realtime = false;
-        wparams.print_special = false;
-        wparams.print_timestamps = false;
-
-        std::string initial_prompt = "Commands: reset, Reset. Mixing 15, mixing 80. AGC 0, AGC 10. Pitch-shift 0, Pitch-Shift -6, Pitch shift +3.";
-        wparams.initial_prompt = initial_prompt.c_str();
-
-        if (!vad_model_path_.empty()) {
-            wparams.vad = true;
-            wparams.vad_model_path = vad_model_path_.c_str();
-            wparams.vad_params = whisper_vad_default_params();
+        if (noise_suppressor_) {
+            const auto denoise_start = std::chrono::steady_clock::now();
+            noise_suppressor_->process(pcm_samples);
+            spdlog::debug("Noise suppression: {} samples in {}us", pcm_samples.size(),
+                          std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - denoise_start).count());
         }
 
+        const auto stt_start = std::chrono::steady_clock::now();
         const int ret = whisper_full(
             context_.get(),
-            wparams,
-            denoised_samples.data(),
-            static_cast<int>(denoised_samples.size()));
+            make_params(pcm_samples.size()),
+            pcm_samples.data(),
+            static_cast<int>(pcm_samples.size()));
+        spdlog::debug("Whisper: {} samples in {}ms", pcm_samples.size(),
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - stt_start).count());
 
         if (ret != 0) {
             return std::unexpected(std::format("whisper_full failed with code {}", ret));
@@ -110,14 +109,51 @@ namespace CAM::API {
             }
         }
 
-        return transcript;
+        const auto first = transcript.find_first_not_of(" \t\n");
+        if (first == std::string::npos) {
+            return std::string{};
+        }
+        const auto last = transcript.find_last_not_of(" \t\n");
+        return transcript.substr(first, last - first + 1);
+    }
+
+    whisper_full_params STTHandler::make_params(size_t num_samples) const {
+        whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        wparams.n_threads = n_threads_;
+        wparams.language = "en";
+        wparams.translate = false;
+        wparams.no_context = true;
+        wparams.single_segment = true;
+        wparams.no_timestamps = true;
+        wparams.max_tokens = kMaxTokens;
+        wparams.suppress_blank = true;
+        wparams.suppress_nst = true;
+        wparams.no_speech_thold = 0.6F; //NOLINT
+        wparams.print_progress = false;
+        wparams.print_realtime = false;
+        wparams.print_special = false;
+        wparams.print_timestamps = false;
+        wparams.initial_prompt = kInitialPrompt;
+
+        // raw clip length is an upper bound on what's left after VAD trims silence
+        const auto clip_frames = static_cast<int>((num_samples + kSamplesPerEncoderFrame - 1) / kSamplesPerEncoderFrame);
+        wparams.audio_ctx = std::clamp(clip_frames + kAudioCtxMargin, kMinAudioCtx,
+                                       whisper_model_n_audio_ctx(context_.get()));
+
+        if (!vad_model_path_.empty()) {
+            wparams.vad = true;
+            wparams.vad_model_path = vad_model_path_.c_str();
+            wparams.vad_params = whisper_vad_default_params();
+        }
+
+        return wparams;
     }
 
     void STTHandler::transcribe_async(std::vector<float> pcm_samples, TranscribeCallback callback) {
         boost::asio::post(worker_pool_, [self = shared_from_this(),
                                          samples = std::move(pcm_samples),
-                                         callback = std::move(callback)]() {
-            auto result = self->transcribe(samples);
+                                         callback = std::move(callback)]() mutable {
+            auto result = self->transcribe(std::move(samples));
             if (callback) {
                 callback(std::move(result));
             }
