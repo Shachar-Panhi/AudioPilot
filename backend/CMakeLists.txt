@@ -125,6 +125,14 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(boost libdatachannel spdlog glaze opus whisper kissfft)
 
+# whisper/ggml inference at -O0 is several times slower, which makes Debug builds unusable for testing STT latency.
+# keep the heavy third-party DSP/inference targets optimised in every configuration. our own code keeps the preset's flags.
+foreach(optimised_target IN ITEMS whisper ggml ggml-base ggml-cpu ggml-vulkan ggml-cuda opus kissfft)
+    if(TARGET ${optimised_target})
+        target_compile_options(${optimised_target} PRIVATE $<$<CONFIG:Debug>:-O2>)
+    endif()
+endforeach()
+
 find_package(OpenSSL REQUIRED)
 
 add_executable(backend "src/main.cpp" "src/api/Listener.cpp" "src/api/WebsocketSession.cpp"
@@ -135,7 +143,7 @@ add_executable(backend "src/main.cpp" "src/api/Listener.cpp" "src/api/WebsocketS
 "src/api/OpusTranscoder.cpp" "src/api/PTTHandler.cpp" "src/api/STTHandler.cpp" "src/api/NoiseSuppressor.cpp")
 
 target_compile_definitions(backend PRIVATE
-    WHISPER_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-tiny.en-q8_0.bin"
+    WHISPER_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-base.en.bin"
     WHISPER_VAD_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-silero-v5.1.2.bin"
 )
 
