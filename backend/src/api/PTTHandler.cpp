@@ -2,30 +2,37 @@
 #include "../ThirdParty/RtpCpp/RtpPacket.hpp"
 #include "PeerConnection.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <span>
 #include <spdlog/spdlog.h>
 #include <utility>
 
 namespace CAM::API {
 
-    PTTHandler::PTTHandler(std::string session_id, OpusTranscoder transcoder, std::shared_ptr<STTHandler> stt_handler) noexcept
+    PTTHandler::PTTHandler(std::string session_id, OpusTranscoder transcoder, std::shared_ptr<STTHandler> stt_handler,
+                           TranscriptCallback on_transcript) noexcept
         : session_id_(std::move(session_id)),
           transcoder_(std::move(transcoder)),
-          stt_handler_(std::move(stt_handler)) {}
+          stt_handler_(std::move(stt_handler)),
+          on_transcript_(std::move(on_transcript)) {}
 
     std::expected<std::unique_ptr<PTTHandler>, std::string>
-    PTTHandler::create(std::string session_id, std::shared_ptr<STTHandler> stt_handler) {
+    PTTHandler::create(std::string session_id, std::shared_ptr<STTHandler> stt_handler, TranscriptCallback on_transcript) {
         auto transcoder = OpusTranscoder::create();
         if (!transcoder) {
             return std::unexpected("PTTHandler: failed to create OpusTranscoder - " + transcoder.error());
         }
         return std::unique_ptr<PTTHandler>(
-            new PTTHandler(std::move(session_id), std::move(transcoder.value()), std::move(stt_handler)));
+            new PTTHandler(std::move(session_id), std::move(transcoder.value()), std::move(stt_handler),
+                           std::move(on_transcript)));
     }
 
     void PTTHandler::start() {
         std::lock_guard<std::mutex> lock(mutex_);
         pcm_buffer_.clear();
+        last_sequence_.reset();
+        transcoder_.reset_decoder();
         active_.store(true, std::memory_order_release);
         spdlog::info("[{}] PTT started", session_id_);
     }
@@ -65,18 +72,49 @@ namespace CAM::API {
             return false;
         }
 
-        auto decoded_res = transcoder_.decode(payload);
-        if (!decoded_res) {
-            if (decoded_res.error() == "BUFFERING") {
+        const uint16_t sequence = header.sequence_number_;
+        if (last_sequence_) {
+            const auto delta = static_cast<uint16_t>(sequence - *last_sequence_);
+            if (delta == 0 || delta >= 0x8000U) { //NOLINT
                 return true;
             }
-            spdlog::warn("[{}] PTT: Failed to decode Opus payload: {}", session_id_, decoded_res.error());
-            return true;
+
+            const auto lost = std::min<uint16_t>(delta - 1, kMaxConcealedPackets);
+            for (uint16_t i = 0; i < lost; ++i) {
+                decode_and_append({});
+            }
+        }
+        last_sequence_ = sequence;
+
+        decode_and_append(payload);
+        return true;
+    }
+
+    void PTTHandler::decode_and_append(std::span<const uint8_t> payload) {
+        auto decoded_res = transcoder_.decode(payload);
+        if (!decoded_res) {
+            if (decoded_res.error() != "BUFFERING") {
+                spdlog::warn("[{}] PTT: Failed to decode Opus payload: {}", session_id_, decoded_res.error());
+            }
+            return;
         }
 
-        pcm_buffer_.insert(pcm_buffer_.end(), decoded_res->begin(), decoded_res->end());
+        append_samples(*decoded_res);
+    }
 
-        return true;
+    void PTTHandler::append_samples(std::span<const float> samples) {
+        const size_t remaining = kMaxPttSamples - pcm_buffer_.size();
+        if (remaining == 0) {
+            return;
+        }
+
+        const auto accepted = samples.first(std::min(remaining, samples.size()));
+        pcm_buffer_.insert(pcm_buffer_.end(), accepted.begin(), accepted.end());
+
+        if (pcm_buffer_.size() == kMaxPttSamples) {
+            spdlog::warn("[{}] PTT: reached the {}s limit, ignoring further audio until PTT stops",
+                         session_id_, kMaxPttDurationSec);
+        }
     }
 
     void PTTHandler::stop() {
@@ -94,17 +132,19 @@ namespace CAM::API {
         spdlog::info("[{}] PTT stopped - transcribing {:.2f} seconds of audio with {} samples",
                      session_id_, duration_sec, audio_samples.size());
 
-        
         if (stt_handler_ && !audio_samples.empty()) {
-            const std::string session_id = session_id_;
             stt_handler_->transcribe_async(
                 std::move(audio_samples),
-                [session_id](std::expected<std::string, std::string> transcript_res) {
-                    if (!transcript_res) {
+                [session_id = session_id_, on_transcript = on_transcript_](std::expected<std::string, std::string> transcript_res) {
+                    if (transcript_res) {
+                        spdlog::info("[{}] STT Transcription: \"{}\"", session_id, *transcript_res);
+                    } else {
                         spdlog::error("[{}] STT Failed: {}", session_id, transcript_res.error());
-                        return;
                     }
-                    spdlog::info("[{}] STT Transcription: {}", session_id, *transcript_res);
+
+                    if (on_transcript) {
+                        on_transcript(session_id, std::move(transcript_res));
+                    }
                 });
         }
     }

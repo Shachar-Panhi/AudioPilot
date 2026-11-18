@@ -10,7 +10,7 @@
 namespace CAM::API {
     class BridgeManager {
     public:
-        explicit BridgeManager(std::shared_ptr<STTHandler> stt_handler);
+        BridgeManager(std::shared_ptr<STTHandler> stt_handler, PTTHandler::TranscriptCallback on_transcript);
 
         void create_bridge(const std::shared_ptr<PeerConnection>& pc1,
                            const std::shared_ptr<PeerConnection>& pc2,
@@ -25,6 +25,7 @@ namespace CAM::API {
 
     private:
         std::shared_ptr<STTHandler> stt_handler_;
+        PTTHandler::TranscriptCallback on_transcript_;
         std::unordered_map<std::string, std::shared_ptr<Bridge>> bridged_sessions_;
     };
 }

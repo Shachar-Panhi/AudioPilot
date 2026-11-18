@@ -2,6 +2,7 @@
 
 // #include <algorithm>
 #include <format>
+#include <span>
 #include <spdlog/spdlog.h>
 #include <utility>
 
@@ -113,6 +114,11 @@ namespace CAM::API {
         return output;
     }
 
+    void OpusTranscoder::reset_decoder() {
+        opus_decoder_ctl(decoder_.get(), OPUS_RESET_STATE); //NOLINT
+        sample_buffer_.clear();
+    }
+
     std::expected<std::array<float, OpusTranscoder::kDecodedPacketSize>, std::string>
     OpusTranscoder::decode(std::span<const uint8_t> encoded_packet) {
         std::array<float, kDecodedPacketSize> temp_output{};
@@ -147,7 +153,8 @@ namespace CAM::API {
             return temp_output;
         }
 
-        sample_buffer_.insert(sample_buffer_.end(), temp_output.begin(), temp_output.begin() + decoded_samples);
+        const auto decoded = std::span(temp_output).first(static_cast<size_t>(decoded_samples));
+        sample_buffer_.insert(sample_buffer_.end(), decoded.begin(), decoded.end());
 
         if (sample_buffer_.size() >= kDecodedPacketSize) {
             std::array<float, kDecodedPacketSize> full_frame{};

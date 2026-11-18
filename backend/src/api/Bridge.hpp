@@ -14,7 +14,8 @@ namespace CAM::API {
                std::weak_ptr<PeerConnection> peer2,
                std::string session1_id,
                std::string session2_id,
-               const std::shared_ptr<STTHandler>& stt_handler);
+               const std::shared_ptr<STTHandler>& stt_handler,
+               const PTTHandler::TranscriptCallback& on_transcript);
 
         bool contains(const std::string& session_id) const;
         std::string get_partner(const std::string& session_id) const;

@@ -4,14 +4,15 @@
 
 namespace CAM::API {
 
-    BridgeManager::BridgeManager(std::shared_ptr<STTHandler> stt_handler)
-        : stt_handler_(std::move(stt_handler)) {}
+    BridgeManager::BridgeManager(std::shared_ptr<STTHandler> stt_handler, PTTHandler::TranscriptCallback on_transcript)
+        : stt_handler_(std::move(stt_handler)),
+          on_transcript_(std::move(on_transcript)) {}
 
     void BridgeManager::create_bridge(const std::shared_ptr<PeerConnection>& pc1,
                                       const std::shared_ptr<PeerConnection>& pc2,
                                       const std::string& session1_id,
                                       const std::string& session2_id) {
-        auto bridge = std::make_shared<Bridge>(pc1, pc2, session1_id, session2_id, stt_handler_);
+        auto bridge = std::make_shared<Bridge>(pc1, pc2, session1_id, session2_id, stt_handler_, on_transcript_);
         bridged_sessions_[session1_id] = bridge;
         bridged_sessions_[session2_id] = bridge;
         bridge->setup_routing();

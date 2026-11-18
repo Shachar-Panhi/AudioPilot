@@ -19,6 +19,12 @@ export const ApiRequestPacketSchema = z.object({
   action: z.string(),
 });
 
+export const SttResultPacketSchema = z.object({
+  type: z.literal('stt_result'),
+  status: z.enum(['success', 'error']),
+  text: z.string(),
+});
+
 export const ApiResponsePacketSchema = z.object({
   type: z.string(),
   action: z.string(),

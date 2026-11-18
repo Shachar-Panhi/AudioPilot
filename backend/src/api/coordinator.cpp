@@ -3,14 +3,52 @@
 #include "../utils/JsonUtils.hpp"
 #include "types.hpp"
 
+#include <expected>
+#include <string>
 #include <utility>
 
 namespace CAM::API {
-    Coordinator::Coordinator(std::shared_ptr<WebsocketManager> ws_manager,
-        std::shared_ptr<PeerConnectionManager> pc_manager, std::shared_ptr<BridgeManager> bridge_manager)
-    : ws_manager_(std::move(ws_manager)), pc_manager_(std::move(pc_manager)),
-        bridge_manager_(std::move(bridge_manager)),
+    namespace {
+        // serializes a packet and sends it to a session's websocket, if that session is still connected.
+        // must run on the io executor.
+        template <typename Packet>
+        void send_to_session(const WebsocketManager& ws_manager, const std::string& session_id, const Packet& packet) {
+            auto session = ws_manager.get_session(session_id);
+            if (!session) {
+                return;
+            }
+
+            auto json_str = CAM::Utils::serialize_json(packet);
+            if (!json_str) {
+                spdlog::error("[{}] Failed to serialize packet", session_id);
+                return;
+            }
+
+            session->dispatch_message(std::move(*json_str));
+        }
+    }
+
+    Coordinator::Coordinator(boost::asio::any_io_executor executor,
+        std::shared_ptr<WebsocketManager> ws_manager,
+        std::shared_ptr<PeerConnectionManager> pc_manager, std::shared_ptr<STTHandler> stt_handler)
+    : executor_(std::move(executor)), ws_manager_(std::move(ws_manager)), pc_manager_(std::move(pc_manager)),
+        bridge_manager_(std::make_shared<BridgeManager>(std::move(stt_handler),
+                                                        make_transcript_callback(executor_, ws_manager_))),
         router_(ws_manager_, pc_manager_, bridge_manager_, *this) {}
+
+    PTTHandler::TranscriptCallback Coordinator::make_transcript_callback(boost::asio::any_io_executor executor,
+                                                                        std::shared_ptr<WebsocketManager> ws_manager) {
+        return [executor = std::move(executor), ws_manager = std::move(ws_manager)](
+                   const std::string& session_id, std::expected<std::string, std::string> transcript) {
+            SttResultPacket packet;
+            packet.status = transcript ? "success" : "error";
+            packet.text = transcript ? std::move(*transcript) : std::move(transcript.error());
+
+            boost::asio::post(executor, [ws_manager, session_id, packet = std::move(packet)]() {
+                send_to_session(*ws_manager, session_id, packet);
+            });
+        };
+    }
 
     WsCallback Coordinator::process_ws_callback() {
         return [this](TCP::socket socket, HTTP::request<HTTP::string_body> req) {
@@ -19,8 +57,9 @@ namespace CAM::API {
             auto session_id = CAM::Utils::generate_session_id();
             
             auto on_peer_join = [](const std::shared_ptr<PeerConnection>&) {};
+            // fired from a libdatachannel thread, so hop onto the io executor before touching the managers
             auto on_peer_leave = [this, session_id](const std::shared_ptr<PeerConnection>&) {
-                disconnect_session(session_id);
+                boost::asio::post(executor_, [this, session_id]() { disconnect_session(session_id); });
             };
 
             auto peer_connection = std::make_shared<PeerConnection>(on_peer_join, on_peer_leave, session_id);
@@ -72,16 +111,10 @@ namespace CAM::API {
 
             spdlog::info("Call ended between {} and {}", session_id, partner_id);
 
-            if (ws_manager_->contains(partner_id)) {
-                ApiResponsePacket partner_res;
-                partner_res.action = "disconnect";
-                partner_res.status = "partner_disconnected";
-
-                auto json_str = CAM::Utils::serialize_json(partner_res);
-                if (json_str) {
-                    ws_manager_->get_session(partner_id)->dispatch_message(json_str.value());
-                }
-            }
+            ApiResponsePacket partner_res;
+            partner_res.action = "disconnect";
+            partner_res.status = "partner_disconnected";
+            send_to_session(*ws_manager_, partner_id, partner_res);
         }
     }
 }

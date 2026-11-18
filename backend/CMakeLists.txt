@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 set(CMAKE_C_COMPILER "clang")
 set(CMAKE_CXX_COMPILER "clang++")
 
-project(Call-Management LANGUAGES C CXX)
+project(AudioPilot LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -96,6 +96,9 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
+set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
@@ -107,7 +110,28 @@ FetchContent_Declare(
     GIT_TAG        v1.9.5
 )
 
-FetchContent_MakeAvailable(boost libdatachannel spdlog glaze opus whisper)
+set(KISSFFT_DATATYPE "float" CACHE STRING "" FORCE)
+set(KISSFFT_STATIC OFF CACHE BOOL "" FORCE)
+set(KISSFFT_TEST OFF CACHE BOOL "" FORCE)
+set(KISSFFT_TOOLS OFF CACHE BOOL "" FORCE)
+set(KISSFFT_PKGCONFIG OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    kissfft
+    GIT_REPOSITORY https://github.com/mborgerding/kissfft.git
+    GIT_TAG        131.2.0
+    GIT_SHALLOW    TRUE
+)
+
+FetchContent_MakeAvailable(boost libdatachannel spdlog glaze opus whisper kissfft)
+
+# whisper/ggml inference at -O0 is several times slower, which makes Debug builds unusable for testing STT latency.
+# keep the heavy third-party DSP/inference targets optimised in every configuration. our own code keeps the preset's flags.
+foreach(optimised_target IN ITEMS whisper ggml ggml-base ggml-cpu ggml-vulkan ggml-cuda opus kissfft)
+    if(TARGET ${optimised_target})
+        target_compile_options(${optimised_target} PRIVATE $<$<CONFIG:Debug>:-O2>)
+    endif()
+endforeach()
 
 find_package(OpenSSL REQUIRED)
 
@@ -116,10 +140,10 @@ add_executable(backend "src/main.cpp" "src/api/Listener.cpp" "src/api/WebsocketS
 "src/api/HttpRouter.cpp"
 "src/api/PeerConnection.cpp" "src/api/PeerConnectionManager.cpp" "src/ThirdParty/RtpCpp/SmallVector.cpp"
 "src/api/Bridge.cpp" "src/api/BridgeManager.cpp"
-"src/api/OpusTranscoder.cpp" "src/api/PTTHandler.cpp" "src/api/STTHandler.cpp")
+"src/api/OpusTranscoder.cpp" "src/api/PTTHandler.cpp" "src/api/STTHandler.cpp" "src/api/NoiseSuppressor.cpp")
 
 target_compile_definitions(backend PRIVATE
-    WHISPER_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-tiny.en-q8_0.bin"
+    WHISPER_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-base.en.bin"
     WHISPER_VAD_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-silero-v5.1.2.bin"
 )
 
@@ -134,4 +158,5 @@ target_link_libraries(backend PRIVATE
     OpenSSL::Crypto
     Opus::opus
     whisper
+    kissfft::kissfft
 )
