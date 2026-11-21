@@ -11,9 +11,8 @@ int main() {
     constexpr auto kWhisperVadModelPath = WHISPER_VAD_MODEL_PATH;
     constexpr bool kUseGpu = true;
 
-    // the browser already applies noise suppression to the mic track,
-    // and running a second spectral suppressor on top measurably cost Whisper words in testing.
-    constexpr bool kEnableServerNoiseSuppression = false;
+    // runs the Wiener filter noise suppressor on every PTT clip before it reaches Whisper
+    constexpr bool kEnableServerNoiseSuppression = true;
 
     auto stt_result = CAM::API::STTHandler::create(kWhisperModelPath, kWhisperVadModelPath,
                                                    kUseGpu, kEnableServerNoiseSuppression);

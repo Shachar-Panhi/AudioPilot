@@ -50,8 +50,8 @@ namespace CAM::API {
         decode(std::span<const uint8_t> encoded_packet); // receives a span of encoded opus packet (160 bytes)
         // an empty span runs opus packet loss concealment and synthesises one frame in place of a lost packet.
 
-        // clears decoder history and any partially buffered frame, so a new recording doesn't start with leftovers
-        // from audio that was decoded a long time ago.
+        // clears decoder history and any partially buffered frame, e.g. after a long gap in packets, so decoding
+        // doesn't continue from stale audio.
         void reset_decoder();
 
     private:

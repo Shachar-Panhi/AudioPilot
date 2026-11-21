@@ -29,8 +29,12 @@ namespace CAM::API {
         // glued together. longer gaps are left as is rather than inventing a long stretch of audio.
         static constexpr uint16_t kMaxConcealedPackets = 5;
 
+        // the audio from just before PTT is pressed is kept as a noise reference for the noise suppressor
+        static constexpr size_t kNoiseReferenceSamples = OpusTranscoder::kSampleRate / 2; // 0.5s
+
         // called from the STT worker thread with the session id and either the transcript or an error
-        using TranscriptCallback = std::function<void(const std::string&, std::expected<std::string, std::string>)>;
+        using TranscriptCallback =
+            std::function<void(const std::string&, std::expected<STTHandler::Transcript, std::string>)>;
 
         static std::expected<std::unique_ptr<PTTHandler>, std::string>
         create(std::string session_id, std::shared_ptr<STTHandler> stt_handler, TranscriptCallback on_transcript);
@@ -44,14 +48,18 @@ namespace CAM::API {
 
         void start();
         void stop();
+
+        // decodes every packet, including while PTT is idle (to keep the noise reference up to date).
+        // returns true if the packet belongs to a PTT recording, false if it should be forwarded to the call partner
         bool process_packet(const rtc::binary& packet);
 
     private:
         PTTHandler(std::string session_id, OpusTranscoder transcoder, std::shared_ptr<STTHandler> stt_handler,
                    TranscriptCallback on_transcript) noexcept;
 
-        void decode_and_append(std::span<const uint8_t> payload);
-        void append_samples(std::span<const float> samples);
+        // both require mutex_ to be held
+        void decode_and_store(std::span<const uint8_t> payload);
+        void store_samples(std::span<const float> samples);
 
         std::string session_id_;
         OpusTranscoder transcoder_;
@@ -60,7 +68,9 @@ namespace CAM::API {
 
         std::mutex mutex_;
         std::atomic<bool> active_{false};
-        std::vector<float> pcm_buffer_;
+        std::vector<float> pcm_buffer_;       // the command being recorded
+        std::vector<float> recent_audio_;     // rolling audio while idle (holds up to 2x the reference length)
+        std::vector<float> noise_reference_;  // snapshot of recent_audio_ taken when PTT starts
         std::optional<uint16_t> last_sequence_;
     };
 }

@@ -38,6 +38,7 @@ namespace CAM::API {
         std::string type = "stt_result"; //NOLINT
         std::string status; //NOLINT  "success" or "error"
         std::string text; //NOLINT    transcript on success, error message otherwise
+        std::string command; //NOLINT canonical command ("pitch -6"), empty if the transcript isn't a command
     };
 
     struct ApiResponsePacket {
