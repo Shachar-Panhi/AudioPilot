@@ -253,11 +253,13 @@ export const useWebRTC = (wsUrl: string, apiUrl: string) => {
 
         const sttParsed = SttResultPacketSchema.safeParse(rawPacket);
         if (sttParsed.success) {
-          const { status, text } = sttParsed.data;
+          const { status, text, command } = sttParsed.data;
           if (status === 'error') {
             appendLog(`Voice command failed: ${text}`, 'system');
+          } else if (command) {
+            appendLog(`Voice command: ${command} (heard "${text}")`, 'received');
           } else {
-            appendLog(text ? `Voice command: "${text}"` : 'Voice command: no speech detected.', 'received');
+            appendLog(text ? `Didn't catch a command (heard "${text}"). Please repeat.` : 'Voice command: no speech detected.', 'system');
           }
           return;
         }

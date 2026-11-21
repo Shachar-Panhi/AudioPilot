@@ -31,20 +31,21 @@ namespace CAM::API {
     void PTTHandler::start() {
         std::lock_guard<std::mutex> lock(mutex_);
         pcm_buffer_.clear();
-        last_sequence_.reset();
-        transcoder_.reset_decoder();
+
+        const size_t reference_size = std::min(recent_audio_.size(), kNoiseReferenceSamples);
+        noise_reference_.assign(recent_audio_.end() - static_cast<std::ptrdiff_t>(reference_size), recent_audio_.end());
+        recent_audio_.clear();
+
         active_.store(true, std::memory_order_release);
         spdlog::info("[{}] PTT started", session_id_);
     }
 
     bool PTTHandler::process_packet(const rtc::binary& packet) {
-        if (!active_.load(std::memory_order_acquire)) {
-            return false;
-        }
+        const bool active = active_.load(std::memory_order_acquire);
 
         if (packet.empty() || packet.size() > RtpCpp::kMaxRtpPacketSize) {
             spdlog::warn("[{}] PTT: Invalid RTP packet size ({})", session_id_, packet.size());
-            return true;
+            return active;
         }
 
         std::array<uint8_t, RtpCpp::kMaxRtpPacketSize> buffer{};
@@ -53,7 +54,7 @@ namespace CAM::API {
         RtpCpp::StaticRtpPacket rtp(buffer);
         if (rtp.parse(packet.size()) != RtpCpp::Result::kSuccess) {
             spdlog::warn("[{}] PTT: Failed to parse RTP packet", session_id_);
-            return true;
+            return active;
         }
 
         const auto& header = rtp.get_header();
@@ -64,33 +65,36 @@ namespace CAM::API {
         auto payload = rtp.payload();
         if (payload.empty()) {
             spdlog::warn("[{}] PTT: Empty RTP payload", session_id_);
-            return true;
+            return active;
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!active_.load(std::memory_order_relaxed)) {
-            return false;
-        }
 
         const uint16_t sequence = header.sequence_number_;
         if (last_sequence_) {
             const auto delta = static_cast<uint16_t>(sequence - *last_sequence_);
             if (delta == 0 || delta >= 0x8000U) { //NOLINT
-                return true;
+                return active_.load(std::memory_order_relaxed); // duplicate or late packet. its slot was already filled
             }
 
-            const auto lost = std::min<uint16_t>(delta - 1, kMaxConcealedPackets);
-            for (uint16_t i = 0; i < lost; ++i) {
-                decode_and_append({});
+            const auto lost = static_cast<uint16_t>(delta - 1);
+            if (lost <= kMaxConcealedPackets) {
+                for (uint16_t i = 0; i < lost; ++i) {
+                    decode_and_store({});
+                }
+            } else {
+                // a long gap (e.g. the mic was muted): the decoder's history and the idle audio are stale
+                transcoder_.reset_decoder();
+                recent_audio_.clear();
             }
         }
         last_sequence_ = sequence;
 
-        decode_and_append(payload);
-        return true;
+        decode_and_store(payload);
+        return active_.load(std::memory_order_relaxed);
     }
 
-    void PTTHandler::decode_and_append(std::span<const uint8_t> payload) {
+    void PTTHandler::decode_and_store(std::span<const uint8_t> payload) {
         auto decoded_res = transcoder_.decode(payload);
         if (!decoded_res) {
             if (decoded_res.error() != "BUFFERING") {
@@ -99,10 +103,20 @@ namespace CAM::API {
             return;
         }
 
-        append_samples(*decoded_res);
+        store_samples(*decoded_res);
     }
 
-    void PTTHandler::append_samples(std::span<const float> samples) {
+    void PTTHandler::store_samples(std::span<const float> samples) {
+        if (!active_.load(std::memory_order_relaxed)) {
+            // trimmed only once it reaches twice the reference length, so the buffer isn't shifted on every packet
+            recent_audio_.insert(recent_audio_.end(), samples.begin(), samples.end());
+            if (recent_audio_.size() >= 2 * kNoiseReferenceSamples) {
+                recent_audio_.erase(recent_audio_.begin(),
+                                    recent_audio_.end() - static_cast<std::ptrdiff_t>(kNoiseReferenceSamples));
+            }
+            return;
+        }
+
         const size_t remaining = kMaxPttSamples - pcm_buffer_.size();
         if (remaining == 0) {
             return;
@@ -119,25 +133,30 @@ namespace CAM::API {
 
     void PTTHandler::stop() {
         std::vector<float> audio_samples;
+        std::vector<float> noise_reference;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!active_.exchange(false, std::memory_order_acq_rel)) {
                 return;
             }
             audio_samples.swap(pcm_buffer_);
+            noise_reference.swap(noise_reference_);
         }
 
         const double duration_sec = static_cast<double>(audio_samples.size()) / OpusTranscoder::kSampleRate;
+        const double reference_sec = static_cast<double>(noise_reference.size()) / OpusTranscoder::kSampleRate;
 
-        spdlog::info("[{}] PTT stopped - transcribing {:.2f} seconds of audio with {} samples",
-                     session_id_, duration_sec, audio_samples.size());
+        spdlog::info("[{}] PTT stopped - transcribing {:.2f}s of audio ({:.2f}s noise reference)",
+                     session_id_, duration_sec, reference_sec);
 
         if (stt_handler_ && !audio_samples.empty()) {
             stt_handler_->transcribe_async(
                 std::move(audio_samples),
-                [session_id = session_id_, on_transcript = on_transcript_](std::expected<std::string, std::string> transcript_res) {
+                std::move(noise_reference),
+                [session_id = session_id_, on_transcript = on_transcript_](std::expected<STTHandler::Transcript, std::string> transcript_res) {
                     if (transcript_res) {
-                        spdlog::info("[{}] STT Transcription: \"{}\"", session_id, *transcript_res);
+                        spdlog::info("[{}] STT Transcription: \"{}\" (confidence {:.2f})", session_id,
+                                     transcript_res->text, transcript_res->confidence);
                     } else {
                         spdlog::error("[{}] STT Failed: {}", session_id, transcript_res.error());
                     }

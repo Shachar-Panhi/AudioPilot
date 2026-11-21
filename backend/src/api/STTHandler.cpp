@@ -69,17 +69,17 @@ namespace CAM::API {
             new STTHandler(std::move(ctx), std::move(valid_vad_path), std::move(noise_suppressor)));
     }
 
-    std::expected<std::string, std::string>
-    STTHandler::transcribe(std::vector<float> pcm_samples) {
+    std::expected<STTHandler::Transcript, std::string>
+    STTHandler::transcribe(std::vector<float> pcm_samples, std::span<const float> noise_reference) {
         if (pcm_samples.empty()) {
-            return std::string{};
+            return Transcript{};
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
 
         if (noise_suppressor_) {
             const auto denoise_start = std::chrono::steady_clock::now();
-            noise_suppressor_->process(pcm_samples);
+            noise_suppressor_->process(pcm_samples, noise_reference);
             spdlog::debug("Noise suppression: {} samples in {}us", pcm_samples.size(),
                           std::chrono::duration_cast<std::chrono::microseconds>(
                               std::chrono::steady_clock::now() - denoise_start).count());
@@ -111,10 +111,34 @@ namespace CAM::API {
 
         const auto first = transcript.find_first_not_of(" \t\n");
         if (first == std::string::npos) {
-            return std::string{};
+            return Transcript{};
         }
         const auto last = transcript.find_last_not_of(" \t\n");
-        return transcript.substr(first, last - first + 1);
+        return Transcript{.text = transcript.substr(first, last - first + 1), .confidence = first_sentence_confidence()};
+    }
+
+    float STTHandler::first_sentence_confidence() const {
+        if (whisper_full_n_segments(context_.get()) == 0) {
+            return 0.0F;
+        }
+
+        double total = 0.0;
+        int count = 0;
+        const whisper_token end_of_text = whisper_token_eot(context_.get());
+        for (int i = 0; i < whisper_full_n_tokens(context_.get(), 0); ++i) {
+            const whisper_token_data token = whisper_full_get_token_data(context_.get(), 0, i);
+            if (token.id >= end_of_text) {
+                continue; // special tokens (start of transcript, language, ...) aren't part of the text
+            }
+            total += token.p;
+            ++count;
+
+            // stop at the end of the first sentence: whisper sometimes keeps repeating the command after it
+            if (std::string_view(whisper_full_get_token_text(context_.get(), 0, i)).contains('.')) {
+                break;
+            }
+        }
+        return count == 0 ? 0.0F : static_cast<float>(total / count);
     }
 
     whisper_full_params STTHandler::make_params(size_t num_samples) const {
@@ -133,7 +157,11 @@ namespace CAM::API {
         wparams.print_realtime = false;
         wparams.print_special = false;
         wparams.print_timestamps = false;
-        wparams.initial_prompt = kInitialPrompt;
+        wparams.initial_prompt = initial_prompt_.c_str();
+
+        // no retries at higher temperature. they were triggered by the command-list prompt, quadrupled latency
+        // (~350ms -> ~1.4s) and made results vary from clip to clip. with the parser, one greedy pass is enough
+        wparams.temperature_inc = 0.0F;
 
         // raw clip length is an upper bound on what's left after VAD trims silence
         const auto clip_frames = static_cast<int>((num_samples + kSamplesPerEncoderFrame - 1) / kSamplesPerEncoderFrame);
@@ -144,16 +172,19 @@ namespace CAM::API {
             wparams.vad = true;
             wparams.vad_model_path = vad_model_path_.c_str();
             wparams.vad_params = whisper_vad_default_params();
+            wparams.vad_params.speech_pad_ms = kVadSpeechPadMs;
         }
 
         return wparams;
     }
 
-    void STTHandler::transcribe_async(std::vector<float> pcm_samples, TranscribeCallback callback) {
+    void STTHandler::transcribe_async(std::vector<float> pcm_samples, std::vector<float> noise_reference,
+                                      TranscribeCallback callback) {
         boost::asio::post(worker_pool_, [self = shared_from_this(),
                                          samples = std::move(pcm_samples),
+                                         reference = std::move(noise_reference),
                                          callback = std::move(callback)]() mutable {
-            auto result = self->transcribe(std::move(samples));
+            auto result = self->transcribe(std::move(samples), reference);
             if (callback) {
                 callback(std::move(result));
             }

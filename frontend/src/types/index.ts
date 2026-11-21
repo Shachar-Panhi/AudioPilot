@@ -23,6 +23,8 @@ export const SttResultPacketSchema = z.object({
   type: z.literal('stt_result'),
   status: z.enum(['success', 'error']),
   text: z.string(),
+  // canonical command ("pitch -6"), empty when the transcript isn't a recognised command
+  command: z.string(),
 });
 
 export const ApiResponsePacketSchema = z.object({

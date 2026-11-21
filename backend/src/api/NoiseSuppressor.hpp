@@ -16,8 +16,9 @@ namespace CAM::API {
     //
     // How it works:
     //   1. Split the clip into short overlapping frames and convert each one to frequencies (FFT).
-    //   2. For each frequency, treat its quietest moments in the clip as the noise level.
-    //   3. Turn down each frequency in each frame by how much of it is noise (never by more than -14dB).
+    //   2. Measure each frequency's noise level from the audio recorded just before the clip (the noise reference),
+    //      or from the clip's quietest moments when there is no reference.
+    //   3. Turn down each frequency in each frame by how much of it is noise (never by more than -12dB).
     //   4. Convert the frames back to audio and stitch them together.
     //
     class NoiseSuppressor {
@@ -32,8 +33,9 @@ namespace CAM::API {
         NoiseSuppressor(NoiseSuppressor&&) noexcept = default;
         NoiseSuppressor& operator=(NoiseSuppressor&&) noexcept = default;
 
-        // denoises the samples in place
-        void process(std::span<float> pcm_samples);
+        // denoises the samples in place. noise_reference is the audio right before the clip (e.g. the moment
+        // before PTT was pressed). it's only used to measure the noise and is never modified.
+        void process(std::span<float> pcm_samples, std::span<const float> noise_reference = {});
 
     private:
         static constexpr size_t kFftSize = 512;                // 32ms frames
@@ -48,10 +50,10 @@ namespace CAM::API {
 
         NoiseSuppressor(FftPlan forward, FftPlan inverse) noexcept;
 
-        void compute_spectra(std::span<const float> pcm_samples, size_t num_frames);
-        void estimate_noise(size_t num_frames);
-        void apply_gains(size_t num_frames);
-        void rebuild_audio(std::span<float> pcm_samples, size_t num_frames);
+        void compute_spectra(std::span<const float> noise_reference, std::span<const float> pcm_samples);
+        void estimate_noise();
+        void apply_gains();
+        void rebuild_audio(std::span<float> pcm_samples);
 
         std::span<kiss_fft_cpx, kNumBins> frame_spectrum(size_t frame);
 
@@ -59,8 +61,12 @@ namespace CAM::API {
         FftPlan inverse_;
         std::array<float, kFftSize> window_{};
 
+        // set at the start of each process() call
+        size_t reference_size_ = 0;
+        size_t num_frames_ = 0;
+
         // reused between calls so processing doesn't allocate every time
-        std::vector<float> input_;           // the clip with silence added at both ends
+        std::vector<float> input_;           // silence, noise reference, clip, silence
         std::vector<float> output_;          // rebuilt audio, same layout as input_
         std::vector<kiss_fft_cpx> spectra_;  // every frame's spectrum, one after another
         std::vector<float> bin_history_;     // one frequency's power across all frames
