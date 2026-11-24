@@ -1,3 +1,5 @@
+//NOLINTBEGIN
+
 #pragma once
 
 #include <string>
@@ -5,44 +7,46 @@
 
 namespace CAM::API {
     struct ConnectionPacket {
-        std::string session_id; //NOLINT
+        std::string session_id;
     };
 
     struct SdpOfferPacket {
-        std::string session_id; //NOLINT
-        std::string sdp; //NOLINT
+        std::string session_id;
+        std::string sdp;
     };
 
     struct IceOfferPacket {
-        std::string session_id; //NOLINT
-        std::string candidate; //NOLINT
-        std::optional<std::string> sdpMid; //NOLINT
+        std::string session_id;
+        std::string candidate;
+        std::optional<std::string> sdpMid;
     };
 
     struct HttpCallRequest {
-        std::string session_id; //NOLINT
-        std::string target_session_id; //NOLINT
+        std::string session_id;
+        std::string target_session_id;
     };
 
     struct HttpEndCallRequest {
-        std::string session_id; //NOLINT
+        std::string session_id;
     };
 
     struct HttpPttRequest {
-        std::string session_id; //NOLINT
-        bool active = false; //NOLINT
+        std::string session_id;
+        bool active = false;
     };
 
-    // sent to the client that pressed PTT once its audio has been transcribed
     struct SttResultPacket {
-        std::string type = "stt_result"; //NOLINT
-        std::string status; //NOLINT  "success" or "error"
-        std::string text; //NOLINT    transcript on success, error message otherwise
+        std::string type = "stt_result";
+        std::string status;
+        std::string text;
+        std::string command;
     };
 
     struct ApiResponsePacket {
-        std::string type = "api_response"; //NOLINT
-        std::string action; //NOLINT
-        std::string status; //NOLINT
+        std::string type = "api_response";
+        std::string action;
+        std::string status;
     };
 }
+
+//NOLINTEND

@@ -10,9 +10,9 @@ import {
   type MessageType 
 } from '../types';
 
-// the end of a command is still in the browser's capture/encode pipeline and on the network when the key
-// is released. keep the server recording a little longer so the last word isn't cut off.
-const PTT_RELEASE_TAIL_MS = 250;
+// keep recording briefly after release so the end of the last word reaches the server. with 250ms, recordings
+// often ended right after the last word and came out garbled
+const PTT_RELEASE_TAIL_MS = 450;
 
 export const useWebRTC = (wsUrl: string, apiUrl: string) => {
   const [messages, setMessages] = useState<LogMessage[]>([]);
@@ -253,11 +253,13 @@ export const useWebRTC = (wsUrl: string, apiUrl: string) => {
 
         const sttParsed = SttResultPacketSchema.safeParse(rawPacket);
         if (sttParsed.success) {
-          const { status, text } = sttParsed.data;
+          const { status, text, command } = sttParsed.data;
           if (status === 'error') {
             appendLog(`Voice command failed: ${text}`, 'system');
+          } else if (command) {
+            appendLog(`Voice command: ${command} (heard "${text}")`, 'received');
           } else {
-            appendLog(text ? `Voice command: "${text}"` : 'Voice command: no speech detected.', 'received');
+            appendLog(text ? `Didn't catch a command (heard "${text}"). Please repeat.` : 'Voice command: no speech detected.', 'system');
           }
           return;
         }

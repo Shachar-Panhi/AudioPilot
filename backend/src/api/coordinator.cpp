@@ -1,4 +1,5 @@
 #include "coordinator.hpp"
+#include "CommandParser.hpp"
 #include "../utils/Utils.hpp"
 #include "../utils/JsonUtils.hpp"
 #include "types.hpp"
@@ -39,10 +40,13 @@ namespace CAM::API {
     PTTHandler::TranscriptCallback Coordinator::make_transcript_callback(boost::asio::any_io_executor executor,
                                                                         std::shared_ptr<WebsocketManager> ws_manager) {
         return [executor = std::move(executor), ws_manager = std::move(ws_manager)](
-                   const std::string& session_id, std::expected<std::string, std::string> transcript) {
+                   const std::string& session_id, std::expected<STTHandler::Transcript, std::string> transcript) {
             SttResultPacket packet;
             packet.status = transcript ? "success" : "error";
-            packet.text = transcript ? std::move(*transcript) : std::move(transcript.error());
+            if (transcript && transcript->confidence >= STTHandler::kMinCommandConfidence) {
+                packet.command = CommandParser::parse(transcript->text).value_or("");
+            }
+            packet.text = transcript ? std::move(transcript->text) : std::move(transcript.error());
 
             boost::asio::post(executor, [ws_manager, session_id, packet = std::move(packet)]() {
                 send_to_session(*ws_manager, session_id, packet);
