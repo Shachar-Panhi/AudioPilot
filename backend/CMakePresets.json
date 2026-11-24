@@ -76,5 +76,16 @@
         "CMAKE_CXX_COMPILER": "clang++"
       }
     }
+  ],
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true }
+    },
+    { "name": "clang++-debug", "inherits": "test-base", "configurePreset": "clang++-debug" },
+    { "name": "clang++-debug-UB-A-L", "inherits": "test-base", "configurePreset": "clang++-debug-UB-A-L" },
+    { "name": "clang++-debug-T", "inherits": "test-base", "configurePreset": "clang++-debug-T" },
+    { "name": "clang++-release", "inherits": "test-base", "configurePreset": "clang++-release" }
   ]
 }
