@@ -20,17 +20,23 @@ namespace CAM::API {
 
     class PTTHandler {
     public:
-        // whisper processes audio in 30s windows, and voice commands are far shorter.
-        // capping the clip bounds memory and the noise suppression / STT cost if PTT is left held down.
+        // caps memory and STT cost if PTT is left held down (whisper handles 30s at most anyway)
         static constexpr size_t kMaxPttDurationSec = 30;
         static constexpr size_t kMaxPttSamples = kMaxPttDurationSec * OpusTranscoder::kSampleRate;
 
-        // up to this many consecutive lost packets (100ms) are filled with opus concealment so words aren't
-        // glued together. longer gaps are left as is rather than inventing a long stretch of audio.
+        // short packet gaps (up to 100ms) are filled with opus concealment so words aren't glued together.
+        // longer ones are left as is rather than inventing a long stretch of audio
         static constexpr uint16_t kMaxConcealedPackets = 5;
 
-        // the audio from just before PTT is pressed is kept as a noise reference for the noise suppressor
+        // audio from before the press, used by the noise suppressor to measure the noise. 0.5s gives a stable estimate
         static constexpr size_t kNoiseReferenceSamples = OpusTranscoder::kSampleRate / 2; // 0.5s
+
+        // the recording starts this much before the press, since the "PTT started" request can arrive after the
+        // user starts speaking. real recordings showed up to ~0.75s of a command arriving before it
+        static constexpr size_t kPreRollSamples = OpusTranscoder::kSampleRate * 3 / 4; // 0.75s
+
+        // idle audio kept for the next press: the noise reference, then the pre-roll
+        static constexpr size_t kIdleAudioSamples = kNoiseReferenceSamples + kPreRollSamples;
 
         // called from the STT worker thread with the session id and either the transcript or an error
         using TranscriptCallback =
@@ -49,8 +55,8 @@ namespace CAM::API {
         void start();
         void stop();
 
-        // decodes every packet, including while PTT is idle (to keep the noise reference up to date).
-        // returns true if the packet belongs to a PTT recording, false if it should be forwarded to the call partner
+        // decodes every packet, also while idle. returns true if it belongs to a PTT recording, false if it should
+        // be forwarded to the call partner
         bool process_packet(const rtc::binary& packet);
 
     private:
@@ -68,8 +74,7 @@ namespace CAM::API {
 
         std::mutex mutex_;
         std::atomic<bool> active_{false};
-        // while idle: the most recent audio (up to 2x the reference length).
-        // while recording: the noise reference (the first reference_size_ samples) followed by the command
+        // idle: the most recent audio. recording: the noise reference (reference_size_ samples), then the command
         std::vector<float> audio_;
         size_t reference_size_ = 0;
         std::optional<uint16_t> last_sequence_;

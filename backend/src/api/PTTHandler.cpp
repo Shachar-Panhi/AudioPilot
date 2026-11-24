@@ -30,9 +30,10 @@ namespace CAM::API {
 
     void PTTHandler::start() {
         std::lock_guard<std::mutex> lock(mutex_);
-        // keep only the last half second of idle audio as the noise reference. the command is appended after it
-        reference_size_ = std::min(audio_.size(), kNoiseReferenceSamples);
-        audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(reference_size_));
+        // keep the noise reference and the pre-roll. the pre-roll becomes the start of the command
+        const size_t kept = std::min(audio_.size(), kIdleAudioSamples);
+        audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(kept));
+        reference_size_ = kept - std::min(kept, kPreRollSamples);
 
         active_.store(true, std::memory_order_release);
         spdlog::info("[{}] PTT started", session_id_);
@@ -72,7 +73,7 @@ namespace CAM::API {
         if (last_sequence_) {
             const auto delta = static_cast<uint16_t>(sequence - *last_sequence_);
             if (delta == 0 || delta >= 0x8000U) { //NOLINT
-                return active_.load(std::memory_order_relaxed); // duplicate or late packet. its slot was already filled
+                return active_.load(std::memory_order_relaxed); // duplicate or late packet
             }
 
             const auto lost = static_cast<uint16_t>(delta - 1);
@@ -81,7 +82,7 @@ namespace CAM::API {
                     decode_and_store({});
                 }
             } else {
-                // a long gap (e.g. the mic was muted): the decoder's history and the idle audio are stale
+                // a long gap (e.g. a muted mic) makes the decoder state and idle audio stale
                 transcoder_.reset_decoder();
                 if (!active_.load(std::memory_order_relaxed)) {
                     audio_.clear();
@@ -108,10 +109,10 @@ namespace CAM::API {
 
     void PTTHandler::store_samples(std::span<const float> samples) {
         if (!active_.load(std::memory_order_relaxed)) {
-            // trimmed only once it reaches twice the reference length, so the buffer isn't shifted on every packet
+            // trimmed in batches so the buffer isn't shifted on every packet
             audio_.insert(audio_.end(), samples.begin(), samples.end());
-            if (audio_.size() >= 2 * kNoiseReferenceSamples) {
-                audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(kNoiseReferenceSamples));
+            if (audio_.size() >= 2 * kIdleAudioSamples) {
+                audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(kIdleAudioSamples));
             }
             return;
         }
