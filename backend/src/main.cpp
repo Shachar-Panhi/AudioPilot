@@ -11,11 +11,17 @@ int main() {
     constexpr auto kWhisperVadModelPath = WHISPER_VAD_MODEL_PATH;
     constexpr bool kUseGpu = true;
 
-    // runs the Wiener filter noise suppressor on every PTT clip before it reaches Whisper
+    // voice activity detection: skips whisper on clips with no speech
+    constexpr bool kUseVad = true;
+
+    // noise suppression on every PTT clip before Whisper
     constexpr bool kEnableServerNoiseSuppression = true;
 
-    auto stt_result = CAM::API::STTHandler::create(kWhisperModelPath, kWhisperVadModelPath,
-                                                   kUseGpu, kEnableServerNoiseSuppression);
+    // GBNF grammar steering Whisper towards the command formats (backend/grammars). "" turns it off
+    constexpr auto kCommandGrammarPath = COMMAND_GRAMMAR_DIR "/commands.gbnf";
+
+    auto stt_result = CAM::API::STTHandler::create(kWhisperModelPath, kUseVad ? kWhisperVadModelPath : "",
+                                                   kUseGpu, kEnableServerNoiseSuppression, kCommandGrammarPath);
     if (!stt_result) {
         spdlog::error("Startup failed: {}", stt_result.error());
         return 1;

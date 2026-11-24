@@ -79,7 +79,7 @@ namespace CAM::API {
                      whisper_print_system_info());
 
         return std::shared_ptr<STTHandler>(
-            new STTHandler(std::move(ctx), std::move(valid_vad_path), std::move(noise_suppressor)));
+            new STTHandler(std::move(ctx), std::move(valid_vad_path), std::move(noise_suppressor), std::move(grammar)));
     }
 
     std::expected<STTHandler::Transcript, std::string>
@@ -141,12 +141,12 @@ namespace CAM::API {
         for (int i = 0; i < whisper_full_n_tokens(context_.get(), 0); ++i) {
             const whisper_token_data token = whisper_full_get_token_data(context_.get(), 0, i);
             if (token.id >= end_of_text) {
-                continue; // special tokens (start of transcript, language, ...) aren't part of the text
+                continue; // special tokens aren't part of the text
             }
             total += token.p;
             ++count;
 
-            // stop at the end of the first sentence: whisper sometimes keeps repeating the command after it
+            // only the first sentence: whisper sometimes repeats the command after it
             if (std::string_view(whisper_full_get_token_text(context_.get(), 0, i)).contains('.')) {
                 break;
             }

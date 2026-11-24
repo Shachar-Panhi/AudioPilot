@@ -1,0 +1,36 @@
+# Strict voice command grammar: one written form per command. Whisper is steered towards these forms while
+# it decodes (STTHandler::kGrammarPenalty sets how strongly).
+#
+# Syntax:
+#   name ::= ...      defines a rule (names may contain letters, digits and '-')
+#   "text"            literal text, matched exactly (case-sensitive)
+#   a | b             a or b
+#   ( ... )           grouping
+#   x?  x*  x+        optional, zero or more, one or more
+#   [0-9]  [^.]       one character in / not in a set
+#   # ...             comment
+# A rule can continue on the next line only if the line ends with '|'. Starting a line with '|' ends the rule.
+#
+# Keep in sync with CommandParser (vocabulary and prompt).
+
+# Whisper starts every transcript with a space
+root ::= " " command "."?
+
+command ::= reset | agc | mixing | pitch
+
+# Effect reset
+reset ::= "Effect reset"
+
+# AGC 0 to 100 ([1-9] [0-9]? is 1 to 99)
+agc       ::= "AGC " agc-value
+agc-value ::= "0" | [1-9] [0-9]? | "100"
+
+# Mixing <object>
+mixing ::= "Mixing " object
+object ::= "helicopter" | "fan" | "rain" | "wind" | "traffic" | "crowd" |
+           "ocean" | "thunder" | "siren" | "train" | "birds" | "engine"
+
+# Pitch 0, Pitch [plus/minus] 1 to 12
+pitch       ::= "Pitch " pitch-value
+pitch-value ::= "0" | ("plus " | "minus ")? magnitude
+magnitude   ::= "1" [0-2]? | [2-9]

@@ -1,0 +1,26 @@
+# Flexible voice command grammar: the same commands as commands.gbnf, each in a few written forms.
+# See commands.gbnf for the syntax.
+
+root ::= " " command "."?
+
+command ::= reset | agc | mixing | pitch
+
+# "Effect reset", "effect reset", or just "Reset" if "Effect" isn't heard
+reset ::= ([Ee] "ffect ")? [Rr] "eset"
+
+# "AGC 5", "A G C 50", "AGC five", up to 100 ([1-9] [0-9]? is 1 to 99)
+agc       ::= ("AGC" | "A G C" | "agc") " " agc-value
+agc-value ::= "0" | [1-9] [0-9]? | "100" | "zero" | small-word | "ten"
+
+# "Mixing helicopter", "Mix fan", "mixing rain"
+mixing ::= ("Mixing" | "mixing" | "Mix" | "mix") " " object
+object ::= "helicopter" | "fan" | "rain" | "wind" | "traffic" | "crowd" |
+           "ocean" | "thunder" | "siren" | "train" | "birds" | "engine"
+
+# "Pitch plus 3", "Pitch +3", "Pitch 3", "Pitch shift minus 6", "Pitch -6", "Pitch 0", "Pitch zero"
+pitch       ::= ("Pitch" | "pitch") (" shift")? " " pitch-value
+pitch-value ::= "0" | "zero" | sign? magnitude
+sign        ::= "plus " | "minus " | "+" | "-"
+magnitude   ::= "1" [0-2]? | [2-9] | small-word | "ten" | "eleven" | "twelve"
+
+small-word ::= "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine"
