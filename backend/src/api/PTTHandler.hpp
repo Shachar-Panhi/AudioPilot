@@ -68,9 +68,10 @@ namespace CAM::API {
 
         std::mutex mutex_;
         std::atomic<bool> active_{false};
-        std::vector<float> pcm_buffer_;       // the command being recorded
-        std::vector<float> recent_audio_;     // rolling audio while idle (holds up to 2x the reference length)
-        std::vector<float> noise_reference_;  // snapshot of recent_audio_ taken when PTT starts
+        // while idle: the most recent audio (up to 2x the reference length).
+        // while recording: the noise reference (the first reference_size_ samples) followed by the command
+        std::vector<float> audio_;
+        size_t reference_size_ = 0;
         std::optional<uint16_t> last_sequence_;
     };
 }

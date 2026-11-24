@@ -30,11 +30,9 @@ namespace CAM::API {
 
     void PTTHandler::start() {
         std::lock_guard<std::mutex> lock(mutex_);
-        pcm_buffer_.clear();
-
-        const size_t reference_size = std::min(recent_audio_.size(), kNoiseReferenceSamples);
-        noise_reference_.assign(recent_audio_.end() - static_cast<std::ptrdiff_t>(reference_size), recent_audio_.end());
-        recent_audio_.clear();
+        // keep only the last half second of idle audio as the noise reference. the command is appended after it
+        reference_size_ = std::min(audio_.size(), kNoiseReferenceSamples);
+        audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(reference_size_));
 
         active_.store(true, std::memory_order_release);
         spdlog::info("[{}] PTT started", session_id_);
@@ -85,7 +83,9 @@ namespace CAM::API {
             } else {
                 // a long gap (e.g. the mic was muted): the decoder's history and the idle audio are stale
                 transcoder_.reset_decoder();
-                recent_audio_.clear();
+                if (!active_.load(std::memory_order_relaxed)) {
+                    audio_.clear();
+                }
             }
         }
         last_sequence_ = sequence;
@@ -109,23 +109,23 @@ namespace CAM::API {
     void PTTHandler::store_samples(std::span<const float> samples) {
         if (!active_.load(std::memory_order_relaxed)) {
             // trimmed only once it reaches twice the reference length, so the buffer isn't shifted on every packet
-            recent_audio_.insert(recent_audio_.end(), samples.begin(), samples.end());
-            if (recent_audio_.size() >= 2 * kNoiseReferenceSamples) {
-                recent_audio_.erase(recent_audio_.begin(),
-                                    recent_audio_.end() - static_cast<std::ptrdiff_t>(kNoiseReferenceSamples));
+            audio_.insert(audio_.end(), samples.begin(), samples.end());
+            if (audio_.size() >= 2 * kNoiseReferenceSamples) {
+                audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(kNoiseReferenceSamples));
             }
             return;
         }
 
-        const size_t remaining = kMaxPttSamples - pcm_buffer_.size();
+        const size_t max_size = reference_size_ + kMaxPttSamples;
+        const size_t remaining = max_size - audio_.size();
         if (remaining == 0) {
             return;
         }
 
         const auto accepted = samples.first(std::min(remaining, samples.size()));
-        pcm_buffer_.insert(pcm_buffer_.end(), accepted.begin(), accepted.end());
+        audio_.insert(audio_.end(), accepted.begin(), accepted.end());
 
-        if (pcm_buffer_.size() == kMaxPttSamples) {
+        if (audio_.size() == max_size) {
             spdlog::warn("[{}] PTT: reached the {}s limit, ignoring further audio until PTT stops",
                          session_id_, kMaxPttDurationSec);
         }
@@ -139,8 +139,12 @@ namespace CAM::API {
             if (!active_.exchange(false, std::memory_order_acq_rel)) {
                 return;
             }
-            audio_samples.swap(pcm_buffer_);
-            noise_reference.swap(noise_reference_);
+            // split the buffer into the noise reference and the command
+            const auto command_start = audio_.begin() + static_cast<std::ptrdiff_t>(reference_size_);
+            noise_reference.assign(audio_.begin(), command_start);
+            audio_.erase(audio_.begin(), command_start);
+            audio_samples.swap(audio_);
+            reference_size_ = 0;
         }
 
         const double duration_sec = static_cast<double>(audio_samples.size()) / OpusTranscoder::kSampleRate;
