@@ -156,27 +156,18 @@ namespace CAM::API {
 
     whisper_full_params STTHandler::make_params(size_t num_samples) const {
         whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        // only settings that differ from whisper's defaults
         wparams.n_threads = n_threads_;
-        wparams.language = "en";
-        wparams.translate = false;
-        wparams.no_context = true;
         wparams.single_segment = true;
         wparams.no_timestamps = true;
         wparams.max_tokens = kMaxTokens;
-        wparams.suppress_blank = true;
         wparams.suppress_nst = true;
-        wparams.no_speech_thold = 0.6F; //NOLINT
         wparams.print_progress = false;
-        wparams.print_realtime = false;
-        wparams.print_special = false;
-        wparams.print_timestamps = false;
         wparams.initial_prompt = initial_prompt_.c_str();
 
-        // no retries at higher temperature. they were triggered by the command-list prompt, quadrupled latency
-        // (~350ms -> ~1.4s) and made results vary from clip to clip. with the parser, one greedy pass is enough
+        // no retries at higher temperatures: they were slow and made results inconsistent
         wparams.temperature_inc = 0.0F;
 
-        // raw clip length is an upper bound on what's left after VAD trims silence
         const auto clip_frames = static_cast<int>((num_samples + kSamplesPerEncoderFrame - 1) / kSamplesPerEncoderFrame);
         wparams.audio_ctx = std::clamp(clip_frames + kAudioCtxMargin, kMinAudioCtx,
                                        whisper_model_n_audio_ctx(context_.get()));
