@@ -15,7 +15,7 @@ cmake --build out/build/clang++-debug
 - Other presets: `clang++-debug-UB-A-L` (ASan/UBSan/LSan), `clang++-debug-T` (TSan), `clang++-debug-M` (MSan), `clang++-cpu` / `clang++-vulkan` / `clang++-cuda` (force a Whisper backend), `clang++-release`.
 - `WHISPER_BACKEND=AUTO` picks Metal, then CUDA, then Vulkan, then CPU. whisper/ggml/opus/kissfft are built optimised even in Debug, so don't remove that block.
 - Whisper models are gitignored and must be put in `backend/models/` by hand. The file names the build expects are in `WHISPER_MODEL_PATH` and `WHISPER_VAD_MODEL_PATH` in `CMakeLists.txt`.
-- **New `.cpp` files must be added to `add_executable(backend ...)`** in `CMakeLists.txt`. There's no glob.
+- **New `.cpp` files must be added by hand** in `CMakeLists.txt`, since there's no glob. Source files go in `add_library(audiopilot_core ...)`, and test files go in `add_executable(backend_tests ...)`. `backend` is only `main.cpp` linked against `audiopilot_core`.
 
 ## Lint and format
 
@@ -24,10 +24,19 @@ cmake --build out/build/clang++-debug
 
 ## Testing
 
+```sh
+cmake --build out/build/clang++-debug --target backend_tests
+ctest --preset clang++-debug                       # or ./out/build/clang++-debug/backend_tests
+ctest --preset clang++-debug-UB-A-L                # same tests under ASan/UBSan
+```
+
 - Every new feature gets Catch2 unit tests, written in the same change without being asked.
+- Tests live in `tests/`, one `<Class>Tests.cpp` per class, with the class name as the tag (`[CommandParser]`).
 - Test the public behaviour: the normal case, edge cases, and error paths (the `std::unexpected` results).
 - Unit tests must not need Whisper models, a GPU, or the network. Split pure logic out so it can be tested on its own. `CommandParser` is the model to follow.
-- The Catch2 test target isn't set up yet. If it doesn't exist, say so rather than adding Catch2 to CMake yourself.
+- Build test inputs from the class's constants (`CommandParser::kMaxAgc`, `OpusTranscoder::kSampleRate`), not copied numbers, so retuning doesn't break tests.
+- Generated test signals use fixed seeds so runs are repeatable.
+- `tests/.clang-tidy` turns off checks that Catch2's macros trip. Add to it rather than using `NOLINT`.
 
 ## Naming (enforced by `.clang-tidy`)
 

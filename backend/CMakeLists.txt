@@ -135,7 +135,8 @@ endforeach()
 
 find_package(OpenSSL REQUIRED)
 
-add_executable(backend "src/main.cpp" "src/api/Listener.cpp" "src/api/WebsocketSession.cpp"
+# everything except main.cpp, so the server and the unit tests link the same code
+add_library(audiopilot_core STATIC "src/api/Listener.cpp" "src/api/WebsocketSession.cpp"
 "src/api/HttpSession.cpp" "src/api/WebsocketManager.cpp" "src/api/coordinator.cpp"
 "src/api/HttpRouter.cpp"
 "src/api/PeerConnection.cpp" "src/api/PeerConnectionManager.cpp" "src/ThirdParty/RtpCpp/SmallVector.cpp"
@@ -145,15 +146,9 @@ add_executable(backend "src/main.cpp" "src/api/Listener.cpp" "src/api/WebsocketS
 "${whisper_SOURCE_DIR}/examples/grammar-parser.cpp")
 
 # whisper.cpp's GBNF parser is in its examples, not the library
-target_include_directories(backend PRIVATE "${whisper_SOURCE_DIR}/examples")
+target_include_directories(audiopilot_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src" "${whisper_SOURCE_DIR}/examples")
 
-target_compile_definitions(backend PRIVATE
-    WHISPER_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-base.en.bin"
-    WHISPER_VAD_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-silero-v5.1.2.bin"
-    COMMAND_GRAMMAR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/grammars"
-)
-
-target_link_libraries(backend PRIVATE 
+target_link_libraries(audiopilot_core PUBLIC
     Boost::asio
     Boost::beast
     Boost::uuid
@@ -166,3 +161,42 @@ target_link_libraries(backend PRIVATE
     whisper
     kissfft::kissfft
 )
+
+set(COMMAND_GRAMMAR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/grammars")
+
+add_executable(backend "src/main.cpp")
+target_link_libraries(backend PRIVATE audiopilot_core)
+target_compile_definitions(backend PRIVATE
+    WHISPER_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-base.en.bin"
+    WHISPER_VAD_MODEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/models/ggml-silero-v5.1.2.bin"
+    COMMAND_GRAMMAR_DIR="${COMMAND_GRAMMAR_DIR}"
+)
+
+option(AUDIOPILOT_BUILD_TESTS "Build the Catch2 unit tests" ON)
+
+if(AUDIOPILOT_BUILD_TESTS)
+    FetchContent_Declare(
+        catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.16.1
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(catch2)
+
+    enable_testing()
+    list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
+    include(Catch)
+
+    add_executable(backend_tests
+        "tests/CommandParserTests.cpp"
+        "tests/CommandGrammarTests.cpp"
+        "tests/OpusTranscoderTests.cpp"
+        "tests/NoiseSuppressorTests.cpp"
+        "tests/JsonUtilsTests.cpp"
+        "tests/UtilsTests.cpp"
+    )
+    target_link_libraries(backend_tests PRIVATE audiopilot_core Catch2::Catch2WithMain)
+    target_compile_definitions(backend_tests PRIVATE COMMAND_GRAMMAR_DIR="${COMMAND_GRAMMAR_DIR}")
+
+    catch_discover_tests(backend_tests)
+endif()
