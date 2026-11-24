@@ -137,6 +137,9 @@ namespace CAM::API {
         }
 
         std::optional<std::string> parse_pitch(std::span<const std::string> args) {
+            if (!args.empty() && args.front() == "shift") {
+                args = args.subspan(1); // "Pitch shift minus 6"
+            }
             int sign = 1;
             if (!args.empty() && is_one_of(args.front(), {"-", "minus", "negative", "minis", "minas", "mine"})) {
                 sign = -1;
@@ -158,8 +161,7 @@ namespace CAM::API {
             return std::format("pitch {}{}", sign < 0 ? '-' : '+', *value);
         }
 
-        // the closest object, if it's close enough to be a mishearing. "ring" is as close to "rain" as to "wind",
-        // so it's rejected rather than guessed
+        // the closest object, if it's close enough. ambiguous matches are rejected
         std::optional<std::string> parse_mixing(std::span<const std::string> args) {
             if (args.empty()) {
                 return std::nullopt;
@@ -201,7 +203,12 @@ namespace CAM::API {
             if (matches_keyword(word, "reset", 1)) {
                 return "reset";
             }
-            // "We set" / "We said": "reset" with the R heard as a W
+            // "Effect, re set" / "Effects set"
+            if (is_one_of(word, {"effect", "effects", "affect"}) && !args.empty() &&
+                is_one_of(args.front(), {"set", "said", "sent"})) {
+                return "reset";
+            }
+            // "We set" / "We said"
             if (is_one_of(word, {"re", "we", "wee"}) && !args.empty() &&
                 is_one_of(args.front(), {"set", "said", "send", "sent", "sat"})) {
                 return "reset";
@@ -212,8 +219,7 @@ namespace CAM::API {
             if (word == "age" && !args.empty() && args.front() == "c") {
                 return parse_agc(args.subspan(1));
             }
-            // "GC 6", "DC 9", "ACC 6": a mishearing of "A G C" (often the quiet "A" at the start is lost).
-            // only accepted when a valid AGC value follows
+            // "GC 6", "DC 9", "ACC 6": misheard "A G C", only accepted with a valid value after it
             const bool agc_like = edit_distance(word, "gc") <= 1 || edit_distance(word, "agc") <= 1;
             if (word.size() >= 2 && word.size() <= 4 && is_word(word) && agc_like && !args.empty()) {
                 if (auto agc = parse_agc(args)) {
@@ -231,15 +237,14 @@ namespace CAM::API {
     }
 
     std::string CommandParser::whisper_prompt() {
-        std::string prompt = "Audio console voice commands. Reset. ";
+        std::string prompt = "Audio console voice commands. Effect reset. ";
         for (const auto object : kMixingObjects) {
             prompt += std::format("Mixing {}. ", object);
         }
-        // signs as words: whisper otherwise sometimes dropped the "minus" ("Pitch minus 1" became "Pitch 1")
+        // signs as words: whisper sometimes drops a "-"
         prompt += "Pitch 0. Pitch plus 3. Pitch minus 6. Pitch plus 12. Pitch minus 1. ";
-        // AGC goes last. it's the hardest command to hear ("A G C" is three short letters), and the end of the prompt
-        // influences whisper the most. placed earlier, noisy AGC commands were often heard as "Pitch 0."
-        prompt += "AGC 0. AGC 3. AGC 5. AGC 8. AGC 10.";
+        // AGC last: it's the hardest command to hear
+        prompt += "AGC 0. AGC 5. AGC 10. AGC 50. AGC 100.";
         return prompt;
     }
 
