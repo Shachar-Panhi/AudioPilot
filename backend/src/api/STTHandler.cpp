@@ -9,10 +9,12 @@
 
 namespace CAM::API {
 
-    STTHandler::STTHandler(ContextHandle context, std::string vad_model_path, std::optional<NoiseSuppressor> noise_suppressor) noexcept
+    STTHandler::STTHandler(ContextHandle context, std::string vad_model_path, std::optional<NoiseSuppressor> noise_suppressor,
+                           std::optional<CommandGrammar> grammar)
         : context_(std::move(context)),
           vad_model_path_(std::move(vad_model_path)),
           noise_suppressor_(std::move(noise_suppressor)),
+          grammar_(std::move(grammar)),
           n_threads_(std::clamp(static_cast<int>(std::thread::hardware_concurrency()) / 2, 1, 4)) {}
 
     STTHandler::~STTHandler() {
@@ -23,7 +25,8 @@ namespace CAM::API {
     STTHandler::create(const std::filesystem::path& model_path,
                        const std::filesystem::path& vad_model_path,
                        bool use_gpu,
-                       bool enable_noise_suppression) {
+                       bool enable_noise_suppression,
+                       const std::filesystem::path& grammar_path) {
         if (!std::filesystem::exists(model_path)) {
             return std::unexpected(
                 std::format("Whisper model file not found: {}", model_path.string()));
@@ -52,6 +55,16 @@ namespace CAM::API {
                 return std::unexpected(created.error());
             }
             noise_suppressor = std::move(*created);
+        }
+
+        std::optional<CommandGrammar> grammar;
+        if (!grammar_path.empty()) {
+            auto loaded = CommandGrammar::load(grammar_path);
+            if (!loaded) {
+                return std::unexpected(loaded.error());
+            }
+            grammar = std::move(*loaded);
+            spdlog::info("Whisper command grammar enabled: {}", grammar_path.string());
         }
 
         std::string valid_vad_path;
@@ -172,7 +185,15 @@ namespace CAM::API {
             wparams.vad = true;
             wparams.vad_model_path = vad_model_path_.c_str();
             wparams.vad_params = whisper_vad_default_params();
+            wparams.vad_params.threshold = kVadThreshold;
+            wparams.vad_params.min_speech_duration_ms = kVadMinSpeechMs;
+            wparams.vad_params.min_silence_duration_ms = kVadMinSilenceMs;
             wparams.vad_params.speech_pad_ms = kVadSpeechPadMs;
+        }
+
+        // note: tokens the grammar forces still look confident, so the confidence check is weaker with a grammar
+        if (grammar_) {
+            grammar_->apply(wparams, kGrammarPenalty);
         }
 
         return wparams;
