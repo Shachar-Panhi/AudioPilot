@@ -31,7 +31,7 @@ namespace CAM::API {
     void PTTHandler::start() {
         std::lock_guard<std::mutex> lock(mutex_);
         // keep the noise reference and the pre-roll. the pre-roll becomes the start of the command
-        const size_t kept = std::min(audio_.size(), kIdleAudioSamples);
+        const size_t kept = std::min(audio_.size(), kNoiseReferenceSamples + kPreRollSamples);
         audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(kept));
         reference_size_ = kept - std::min(kept, kPreRollSamples);
 
@@ -109,10 +109,12 @@ namespace CAM::API {
 
     void PTTHandler::store_samples(std::span<const float> samples) {
         if (!active_.load(std::memory_order_relaxed)) {
-            // trimmed in batches so the buffer isn't shifted on every packet
             audio_.insert(audio_.end(), samples.begin(), samples.end());
-            if (audio_.size() >= 2 * kIdleAudioSamples) {
-                audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(kIdleAudioSamples));
+            // keep the noise reference and the pre-roll for the next press. trimmed in batches so the buffer
+            // isn't shifted on every packet
+            if (audio_.size() >= 2 * (kNoiseReferenceSamples + kPreRollSamples)) {
+                audio_.erase(audio_.begin(),
+                             audio_.end() - static_cast<std::ptrdiff_t>(kNoiseReferenceSamples + kPreRollSamples));
             }
             return;
         }

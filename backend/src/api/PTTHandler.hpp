@@ -35,9 +35,6 @@ namespace CAM::API {
         // user starts speaking. real recordings showed up to ~0.75s of a command arriving before it
         static constexpr size_t kPreRollSamples = OpusTranscoder::kSampleRate * 3 / 4; // 0.75s
 
-        // idle audio kept for the next press: the noise reference, then the pre-roll
-        static constexpr size_t kIdleAudioSamples = kNoiseReferenceSamples + kPreRollSamples;
-
         // called from the STT worker thread with the session id and either the transcript or an error
         using TranscriptCallback =
             std::function<void(const std::string&, std::expected<STTHandler::Transcript, std::string>)>;
