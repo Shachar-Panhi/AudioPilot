@@ -1,5 +1,7 @@
 #include "Bridge.hpp"
 
+#include <cstdint>
+#include <rtc/rtp.hpp>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <utility>
@@ -61,19 +63,36 @@ namespace CAM::API {
         }
 
         PTTHandler* handler_ptr = ptt_handler.get();
-        source->set_audio_callback([weak_self = weak_from_this(), target_peer, handler_ptr](const rtc::binary& packet) {
+        // the browser keeps counting sequence numbers while PTT holds its packets back, so shift them to keep the
+        // partner's stream gap free. timestamps keep the real gap, which receivers treat like a silence period
+        source->set_audio_callback([weak_self = weak_from_this(), target_peer, handler_ptr, held_back = uint16_t{0},
+                                    resumed = false](const rtc::binary& packet) mutable {
             auto self = weak_self.lock();
             if (!self) {
                 return;
             }
 
             if (handler_ptr != nullptr && handler_ptr->process_packet(packet)) {
+                ++held_back;
+                resumed = true;
                 return;
             }
 
-            if (auto target = target_peer.lock()) {
-                target->send_audio_packet(packet);
+            auto target = target_peer.lock();
+            if (!target) {
+                return;
             }
+
+            // only full RTP headers reach here, libdatachannel's RtcpReceivingSession drops anything shorter
+            rtc::binary forwarded = packet;
+            auto* header = reinterpret_cast<rtc::RtpHeader*>(forwarded.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+            header->setSeqNumber(static_cast<uint16_t>(header->seqNumber() - held_back));
+            if (resumed) {
+                header->setMarker(true); // marks the start of a talking period
+                resumed = false;
+            }
+
+            target->send_audio_packet(forwarded);
         });
     }
 
