@@ -1,13 +1,19 @@
 #include "Bridge.hpp"
+#include "../ThirdParty/RtpCpp/RtpPacket.hpp"
 
-#include <cstdint>
-#include <rtc/rtp.hpp>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <utility>
 
 namespace CAM::API {
     namespace {
+        // parses without copying. the empty constructor is used because the buffer one writes the version bits
+        bool parse_rtp(RtpCpp::RtpPacketView& rtp, std::span<std::byte> packet) {
+            // libdatachannel hands over std::byte, RtpCpp reads uint8_t: the same bytes
+            auto* data = reinterpret_cast<uint8_t*>(packet.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+            return rtp.parse(std::span<uint8_t>(data, packet.size())) == RtpCpp::Result::kSuccess;
+        }
+
         std::unique_ptr<PTTHandler> init_ptt_handler(
             const std::string& session_id,
             const std::shared_ptr<STTHandler>& stt_handler,
@@ -20,6 +26,36 @@ namespace CAM::API {
             }
             return std::move(ptt.value());
         }
+    }
+
+    bool RtpRewriteState::suppress(std::span<std::byte> packet) {
+        RtpCpp::RtpPacketView rtp;
+        if (!parse_rtp(rtp, packet)) {
+            return false;
+        }
+
+        const uint32_t timestamp = rtp.get_header().timestamp_;
+        ++sequence_offset_;
+        // measured from the received timestamps rather than assuming 20ms packets
+        if (previous_source_timestamp_) {
+            timestamp_offset_ += timestamp - *previous_source_timestamp_;
+        }
+        previous_source_timestamp_ = timestamp;
+        return true;
+    }
+
+    bool RtpRewriteState::rewrite(std::span<std::byte> packet) {
+        RtpCpp::RtpPacketView rtp;
+        if (!parse_rtp(rtp, packet)) {
+            return false;
+        }
+
+        const auto& header = rtp.get_header();
+        const uint32_t timestamp = header.timestamp_;
+        rtp.set_sequence_number(static_cast<uint16_t>(header.sequence_number_ - sequence_offset_));
+        rtp.set_timestamp(timestamp - timestamp_offset_);
+        previous_source_timestamp_ = timestamp;
+        return true;
     }
 
     Bridge::Bridge(std::weak_ptr<PeerConnection> peer1,
@@ -63,36 +99,27 @@ namespace CAM::API {
         }
 
         PTTHandler* handler_ptr = ptt_handler.get();
-        // the browser keeps counting sequence numbers while PTT holds its packets back, so shift them to keep the
-        // partner's stream gap free. timestamps keep the real gap, which receivers treat like a silence period
-        source->set_audio_callback([weak_self = weak_from_this(), target_peer, handler_ptr, held_back = uint16_t{0},
-                                    resumed = false](const rtc::binary& packet) mutable {
+        // each direction gets its own lambda, so each gets its own rewrite state
+        source->set_audio_callback([weak_self = weak_from_this(), target_peer, handler_ptr,
+                                    rewrite_state = RtpRewriteState{}](const rtc::binary& packet) mutable {
             auto self = weak_self.lock();
             if (!self) {
                 return;
             }
 
-            if (handler_ptr != nullptr && handler_ptr->process_packet(packet)) {
-                ++held_back;
-                resumed = true;
-                return;
-            }
-
-            auto target = target_peer.lock();
-            if (!target) {
-                return;
-            }
-
-            // only full RTP headers reach here, libdatachannel's RtcpReceivingSession drops anything shorter
             rtc::binary forwarded = packet;
-            auto* header = reinterpret_cast<rtc::RtpHeader*>(forwarded.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-            header->setSeqNumber(static_cast<uint16_t>(header->seqNumber() - held_back));
-            if (resumed) {
-                header->setMarker(true); // marks the start of a talking period
-                resumed = false;
+            if (handler_ptr != nullptr && handler_ptr->process_packet(packet)) {
+                rewrite_state.suppress(forwarded);
+                return;
             }
 
-            target->send_audio_packet(forwarded);
+            if (!rewrite_state.rewrite(forwarded)) {
+                return;
+            }
+
+            if (auto target = target_peer.lock()) {
+                target->send_audio_packet(forwarded);
+            }
         });
     }
 
