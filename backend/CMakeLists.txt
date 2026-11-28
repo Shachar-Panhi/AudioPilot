@@ -194,6 +194,7 @@ if(AUDIOPILOT_BUILD_TESTS)
         "tests/NoiseSuppressorTests.cpp"
         "tests/JsonUtilsTests.cpp"
         "tests/UtilsTests.cpp"
+        "tests/BridgeTests.cpp"
     )
     target_link_libraries(backend_tests PRIVATE audiopilot_core Catch2::Catch2WithMain)
     target_compile_definitions(backend_tests PRIVATE COMMAND_GRAMMAR_DIR="${COMMAND_GRAMMAR_DIR}")
